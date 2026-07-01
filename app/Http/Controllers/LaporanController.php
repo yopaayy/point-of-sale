@@ -2,83 +2,81 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Pembelian;
-use App\Models\Pengeluaran;
-use App\Models\Penjualan;
 use Illuminate\Http\Request;
-use PDF;
+use Inertia\Inertia;
+use App\Models\Penjualan;
+use App\Models\Produk;
+use App\Services\InventoryService;
+use Carbon\Carbon;
 
 class LaporanController extends Controller
 {
-    public function index(Request $request)
+    protected $inventoryService;
+
+    public function __construct(InventoryService $inventoryService)
     {
-        $tanggalAwal = date('Y-m-d', mktime(0, 0, 0, date('m'), 1, date('Y')));
-        $tanggalAkhir = date('Y-m-d');
-
-        if ($request->has('tanggal_awal') && $request->tanggal_awal != "" && $request->has('tanggal_akhir') && $request->tanggal_akhir) {
-            $tanggalAwal = $request->tanggal_awal;
-            $tanggalAkhir = $request->tanggal_akhir;
-        }
-
-        return view('laporan.index', compact('tanggalAwal', 'tanggalAkhir'));
+        $this->inventoryService = $inventoryService;
     }
 
-    public function getData($awal, $akhir)
+    public function penjualan(Request $request)
     {
-        $no = 1;
-        $data = array();
-        $pendapatan = 0;
-        $total_pendapatan = 0;
+        $filter = $request->query('filter', 'today'); // today, week, month, year, custom
+        $startDate = $request->query('start_date');
+        $endDate = $request->query('end_date');
 
-        while (strtotime($awal) <= strtotime($akhir)) {
-            $tanggal = $awal;
-            $awal = date('Y-m-d', strtotime("+1 day", strtotime($awal)));
+        $query = Penjualan::with(['user', 'pelanggan']);
 
-            $total_penjualan = Penjualan::where('created_at', 'LIKE', "%$tanggal%")->sum('bayar');
-            $total_pembelian = Pembelian::where('created_at', 'LIKE', "%$tanggal%")->sum('bayar');
-            $total_pengeluaran = Pengeluaran::where('created_at', 'LIKE', "%$tanggal%")->sum('nominal');
-
-            $pendapatan = $total_penjualan - $total_pembelian - $total_pengeluaran;
-            $total_pendapatan += $pendapatan;
-
-            $row = array();
-            $row['DT_RowIndex'] = $no++;
-            $row['tanggal'] = tanggal_indonesia($tanggal, false);
-            $row['penjualan'] = format_uang($total_penjualan);
-            $row['pembelian'] = format_uang($total_pembelian);
-            $row['pengeluaran'] = format_uang($total_pengeluaran);
-            $row['pendapatan'] = format_uang($pendapatan);
-
-            $data[] = $row;
+        if ($filter === 'today') {
+            $query->whereDate('tanggal', Carbon::today());
+        } elseif ($filter === 'week') {
+            $query->whereBetween('tanggal', [Carbon::now()->startOfWeek(), Carbon::now()->endOfWeek()]);
+        } elseif ($filter === 'month') {
+            $query->whereMonth('tanggal', Carbon::now()->month)
+                  ->whereYear('tanggal', Carbon::now()->year);
+        } elseif ($filter === 'year') {
+            $query->whereYear('tanggal', Carbon::now()->year);
+        } elseif ($filter === 'custom' && $startDate && $endDate) {
+            $query->whereBetween('tanggal', [$startDate . ' 00:00:00', $endDate . ' 23:59:59']);
         }
 
-        $data[] = [
-            'DT_RowIndex' => '',
-            'tanggal' => '',
-            'penjualan' => '',
-            'pembelian' => '',
-            'pengeluaran' => 'Total Pendapatan',
-            'pendapatan' => format_uang($total_pendapatan),
+        $penjualan = $query->orderBy('tanggal', 'desc')->get();
+
+        $summary = [
+            'total_transaksi' => $penjualan->count(),
+            'total_omset' => $penjualan->sum('total_akhir'),
+            'total_diskon' => $penjualan->sum('diskon'),
+            'total_pajak' => $penjualan->sum('pajak'),
         ];
 
-        return $data;
+        return Inertia::render('Laporan/Penjualan', [
+            'penjualan' => $penjualan,
+            'summary' => $summary,
+            'filter' => $filter,
+            'startDate' => $startDate,
+            'endDate' => $endDate,
+        ]);
     }
 
-    public function data($awal, $akhir)
+    public function stokMenipis()
     {
-        $data = $this->getData($awal, $akhir);
-
-        return datatables()
-            ->of($data)
-            ->make(true);
-    }
-
-    public function exportPDF($awal, $akhir)
-    {
-        $data = $this->getData($awal, $akhir);
-        $pdf  = PDF::loadView('laporan.pdf', compact('awal', 'akhir', 'data'));
-        $pdf->setPaper('a4', 'potrait');
+        // Get all products
+        $produkList = Produk::with(['kategori', 'merk', 'baseUnit'])->where('status', true)->get();
         
-        return $pdf->stream('Laporan-pendapatan-'. date('Y-m-d-his') .'.pdf');
+        $stokMenipis = [];
+
+        foreach ($produkList as $produk) {
+            $stokBase = \App\Models\Inventori::where('produk_id', $produk->id)->sum('stok');
+            
+            // Compare with minimum_stok
+            if ($stokBase <= $produk->minimum_stok) {
+                $produkArray = $produk->toArray();
+                $produkArray['stok_saat_ini'] = $stokBase;
+                $stokMenipis[] = $produkArray;
+            }
+        }
+
+        return Inertia::render('Laporan/StokMenipis', [
+            'stokMenipis' => $stokMenipis
+        ]);
     }
 }

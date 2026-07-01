@@ -10,6 +10,5 @@ class Member extends Model
     use HasFactory;
 
     protected $table = 'member';
-    protected $primaryKey = 'id_member';
-    protected $guarded = [];
+    protected $guarded = ['id'];
 }

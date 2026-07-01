@@ -2,49 +2,75 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Kategori;
-use App\Models\Member;
-use App\Models\Pembelian;
-use App\Models\Pengeluaran;
+use Illuminate\Http\Request;
+use Inertia\Inertia;
 use App\Models\Penjualan;
 use App\Models\Produk;
-use App\Models\Supplier;
-use Illuminate\Http\Request;
+use App\Models\Inventori;
+use App\Models\DetailPenjualan;
+use Carbon\Carbon;
 
 class DashboardController extends Controller
 {
     public function index()
     {
-        $kategori = Kategori::count();
-        $produk = Produk::count();
-        $supplier = Supplier::count();
-        $member = Member::count();
+        $today = Carbon::today();
+        
+        // 1. Total Penjualan Hari Ini
+        $totalPenjualanHariIni = Penjualan::whereDate('tanggal', $today)
+                                          ->where('status', 'selesai')
+                                          ->sum('total_akhir');
 
-        $tanggal_awal = date('Y-m-01');
-        $tanggal_akhir = date('Y-m-d');
+        // 2. Total Transaksi Hari Ini
+        $totalTransaksiHariIni = Penjualan::whereDate('tanggal', $today)
+                                          ->where('status', 'selesai')
+                                          ->count();
 
-        $data_tanggal = array();
-        $data_pendapatan = array();
+        // 3. Produk Terjual Hari Ini
+        // Using DetailPenjualan filtered by today's transactions
+        $produkTerjualHariIni = DetailPenjualan::whereHas('penjualan', function ($query) use ($today) {
+                                                    $query->whereDate('tanggal', $today)->where('status', 'selesai');
+                                                })->sum('qty');
 
-        while (strtotime($tanggal_awal) <= strtotime($tanggal_akhir)) {
-            $data_tanggal[] = (int) substr($tanggal_awal, 8, 2);
-
-            $total_penjualan = Penjualan::where('created_at', 'LIKE', "%$tanggal_awal%")->sum('bayar');
-            $total_pembelian = Pembelian::where('created_at', 'LIKE', "%$tanggal_awal%")->sum('bayar');
-            $total_pengeluaran = Pengeluaran::where('created_at', 'LIKE', "%$tanggal_awal%")->sum('nominal');
-
-            $pendapatan = $total_penjualan - $total_pembelian - $total_pengeluaran;
-            $data_pendapatan[] += $pendapatan;
-
-            $tanggal_awal = date('Y-m-d', strtotime("+1 day", strtotime($tanggal_awal)));
+        // 4. Stok Menipis
+        $stokMenipis = 0;
+        $produks = Produk::where('status', true)->get();
+        foreach ($produks as $produk) {
+            $totalStok = Inventori::where('produk_id', $produk->id)->sum('stok');
+            if ($totalStok <= $produk->stok_minimum) {
+                $stokMenipis++;
+            }
         }
 
-        $tanggal_awal = date('Y-m-01');
+        // 5. Transaksi Terakhir (5 record terakhir)
+        $transaksiTerakhir = Penjualan::with('pelanggan', 'user')
+                                      ->orderBy('tanggal', 'desc')
+                                      ->limit(5)
+                                      ->get();
 
-        if (auth()->user()->level == 1) {
-            return view('admin.dashboard', compact('kategori', 'produk', 'supplier', 'member', 'tanggal_awal', 'tanggal_akhir', 'data_tanggal', 'data_pendapatan'));
-        } else {
-            return view('kasir.dashboard');
+        // 6. Data Grafik Mingguan (7 Hari Terakhir)
+        $grafikMingguan = [];
+        $grafikLabels = [];
+        for ($i = 6; $i >= 0; $i--) {
+            $date = Carbon::today()->subDays($i);
+            $grafikLabels[] = $date->format('d M');
+            $grafikMingguan[] = Penjualan::whereDate('tanggal', $date)
+                                         ->where('status', 'selesai')
+                                         ->sum('total_akhir');
         }
+
+        return Inertia::render('Dashboard', [
+            'overview' => [
+                'total_penjualan' => $totalPenjualanHariIni,
+                'total_transaksi' => $totalTransaksiHariIni,
+                'produk_terjual' => $produkTerjualHariIni,
+                'stok_menipis' => $stokMenipis,
+            ],
+            'transaksi_terakhir' => $transaksiTerakhir,
+            'grafik_mingguan' => [
+                'labels' => $grafikLabels,
+                'data' => $grafikMingguan,
+            ]
+        ]);
     }
 }

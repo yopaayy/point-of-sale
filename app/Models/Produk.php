@@ -10,6 +10,30 @@ class Produk extends Model
     use HasFactory;
 
     protected $table = 'produk';
-    protected $primaryKey = 'id_produk';
-    protected $guarded = [];
+    protected $guarded = ['id'];
+
+    public function kategori()
+    {
+        return $this->belongsTo(Kategori::class);
+    }
+
+    public function merk()
+    {
+        return $this->belongsTo(Merk::class);
+    }
+
+    public function baseUnit()
+    {
+        return $this->belongsTo(Satuan::class, 'base_unit_id');
+    }
+
+    public function satuanProduk()
+    {
+        return $this->hasMany(SatuanProduk::class);
+    }
+
+    public function hargaProduk()
+    {
+        return $this->hasMany(HargaProduk::class);
+    }
 }
